@@ -40,6 +40,24 @@ df = ema(df)
 df_1m = ema(df_1m)
 df_5d = ema(df_5d)
 
+ema20 = df["EMA20"].iloc[-1]
+ema50 = df["EMA50"].iloc[-1]
+ema200 = df["EMA200"].iloc[-1]
+
+# =========================
+# EMA POSITION
+# =========================
+def pos(p, e):
+    return "🟢 เหนือ" if p > e else "🔴 ใต้"
+
+ema_block = f"""
+📊 EMA STATUS
+
+EMA20 : {round(ema20,2)} ({pos(price, ema20)})
+EMA50 : {round(ema50,2)} ({pos(price, ema50)})
+EMA200: {round(ema200,2)} ({pos(price, ema200)})
+"""
+
 # =========================
 # TREND
 # =========================
@@ -66,7 +84,7 @@ rs = gain.ewm(alpha=1/14).mean() / loss.ewm(alpha=1/14).mean()
 rsi = float((100 - (100 / (1 + rs))).iloc[-1])
 
 # =========================
-# NEWS LABEL TRANSLATE
+# NEWS TRANSLATE
 # =========================
 def translate_label(sentiment):
     if sentiment > 0.3:
@@ -89,10 +107,8 @@ def thai_title(title):
         "market": "ตลาด",
         "stocks": "หุ้น"
     }
-
     for k, v in mapping.items():
         title = title.replace(k, v)
-
     return title
 
 # =========================
@@ -128,10 +144,6 @@ for item in feed.entries[:6]:
 # =========================
 # REGIME
 # =========================
-ema20 = df["EMA20"].iloc[-1]
-ema50 = df["EMA50"].iloc[-1]
-ema200 = df["EMA200"].iloc[-1]
-
 if price > ema20 > ema50 > ema200:
     regime = "📈 Uptrend"
 elif price < ema20 < ema50 < ema200:
@@ -159,7 +171,7 @@ else:
 confidence = max(10, min(95, int(abs(prob - 50) * 2)))
 
 # =========================
-# TP / SL (ALWAYS SHOW)
+# TP / SL
 # =========================
 def tp_sl(signal, price):
 
@@ -204,7 +216,7 @@ now = (datetime.now() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 # MESSAGE
 # =========================
 message = f"""
-🤖📊 AI HEDGE FUND v10 (THAI UPGRADED)
+🤖📊 AI HEDGE FUND v10 (FINAL)
 
 🕒 {now}
 
@@ -229,6 +241,9 @@ TP3: {round(tp3,2)}
 SL1: {round(sl1,2)}
 SL2: {round(sl2,2)}
 SL3: {round(sl3,2)}
+
+────────────────────
+{ema_block}
 
 ────────────────────
 {news_text}
