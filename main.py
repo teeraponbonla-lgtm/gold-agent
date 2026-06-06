@@ -24,6 +24,20 @@ ema50 = round(hist["EMA50"].iloc[-1], 2)
 ema100 = round(hist["EMA100"].iloc[-1], 2)
 ema200 = round(hist["EMA200"].iloc[-1], 2)
 
+delta = hist["Close"].diff()
+
+gain = delta.where(delta > 0, 0)
+loss = -delta.where(delta < 0, 0)
+
+avg_gain = gain.rolling(window=14).mean()
+avg_loss = loss.rolling(window=14).mean()
+
+rs = avg_gain / avg_loss
+
+hist["RSI"] = 100 - (100 / (1 + rs))
+
+rsi = round(hist["RSI"].iloc[-1], 2)
+
 signal = "SIDEWAY ➖"
 confidence = 50
 
@@ -73,6 +87,8 @@ EMA20 : {ema20}
 EMA50 : {ema50}
 EMA100: {ema100}
 EMA200: {ema200}
+
+RSI14 : {rsi}
 
 Change: {change}
 
