@@ -21,7 +21,7 @@ previous = round(hist["Close"].iloc[-2], 2)
 change = round(current - previous, 2)
 
 # =========================
-# EMA CALC
+# EMA
 # =========================
 hist["EMA20"] = hist["Close"].ewm(span=20, adjust=False).mean()
 hist["EMA50"] = hist["Close"].ewm(span=50, adjust=False).mean()
@@ -34,7 +34,7 @@ ema100 = round(hist["EMA100"].iloc[-1], 2)
 ema200 = round(hist["EMA200"].iloc[-1], 2)
 
 # =========================
-# RSI (WILDER METHOD FIXED)
+# RSI (Wilder)
 # =========================
 delta = hist["Close"].diff()
 
@@ -52,54 +52,94 @@ rsi = round(hist["RSI"].iloc[-1], 2)
 # =========================
 # TREND
 # =========================
+trend = "Sideway ➖"
 if change > 0:
     trend = "Bullish 📈"
 elif change < 0:
     trend = "Bearish 📉"
-else:
-    trend = "Sideway ➖"
 
 # =========================
-# SIGNAL LOGIC (IMPROVED)
+# SIGNAL (basic logic)
 # =========================
 signal = "SIDEWAY ➖"
 confidence = 50
 
-bull_strong = current > ema20 > ema50 > ema100 > ema200
-bear_strong = current < ema20 < ema50 < ema100 < ema200
-
-bull_mid = current > ema20 and ema20 > ema50
-bear_mid = current < ema20 and ema20 < ema50
-
-if bull_strong and rsi < 70:
-    signal = "BUY 📈"
-    confidence = 90
-
-elif bear_strong and rsi > 30:
+if current < ema20 and ema20 < ema50:
     signal = "SELL 📉"
-    confidence = 90
+    confidence = 75
 
-elif bull_mid and rsi < 60:
+elif current > ema20 and ema20 > ema50:
     signal = "BUY 📈"
-    confidence = 70
+    confidence = 75
 
-elif bear_mid and rsi > 40:
-    signal = "SELL 📉"
-    confidence = 70
-
-# RSI EXTREME FILTER
 if rsi < 25:
     signal = "WATCH REBOUND ⚠️"
     confidence = 60
 
 # =========================
-# NEWS
+# NEWS SENTIMENT AI (KEYWORD)
+# =========================
+def analyze_news(title):
+    title = title.lower()
+
+    bullish_keywords = [
+        "inflation", "rate cut", "dovish", "weak dollar",
+        "recession", "safe haven", "gold demand",
+        "geopolitical", "crisis", "uncertainty"
+    ]
+
+    bearish_keywords = [
+        "rate hike", "hawkish", "strong dollar",
+        "bond yields rise", "risk-on", "stock rally",
+        "fed tightening", "economic growth"
+    ]
+
+    score = 0
+
+    for w in bullish_keywords:
+        if w in title:
+            score += 1
+
+    for w in bearish_keywords:
+        if w in title:
+            score -= 1
+
+    if score > 0:
+        return "🟢 บวกต่อทอง"
+    elif score < 0:
+        return "🔴 ลบต่อทอง"
+    else:
+        return "⚪ เป็นกลาง"
+
+# =========================
+# NEWS FETCH
 # =========================
 feed = feedparser.parse(
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F&region=US&lang=en-US"
 )
 
-news = ["• " + item.title for item in feed.entries[:3]]
+news = []
+news_score = 0
+
+for item in feed.entries[:5]:
+    sentiment = analyze_news(item.title)
+
+    if "🟢" in sentiment:
+        news_score += 1
+    elif "🔴" in sentiment:
+        news_score -= 1
+
+    news.append(f"{sentiment} • {item.title}")
+
+# =========================
+# NEWS IMPACT SUMMARY
+# =========================
+if news_score > 0:
+    news_trend = "🟢 ข่าวรวมเป็นบวกต่อทอง"
+elif news_score < 0:
+    news_trend = "🔴 ข่าวรวมเป็นลบต่อทอง"
+else:
+    news_trend = "⚪ ข่าวออกกลาง ๆ"
 
 # =========================
 # TIME
@@ -111,32 +151,33 @@ now = thai_time.strftime("%d/%m/%Y %H:%M")
 # MESSAGE
 # =========================
 message = f"""
-📊 AI Gold Analyst (v2)
+📊 AI Gold Analyst (v3 - AI News Sentiment)
 
 🕒 {now} น.
 
-Gold Price: {current}
+💰 Gold Price: {current}
+📉 Change: {change}
 
+📊 EMA
 EMA20 : {ema20}
 EMA50 : {ema50}
 EMA100: {ema100}
 EMA200: {ema200}
 
-RSI14 : {rsi}
+📈 RSI14 : {rsi}
 
-Change: {change}
-
-Trend: {trend}
+📌 Trend: {trend}
 
 🎯 Signal: {signal}
-
 🔥 Confidence: {confidence}%
 
-📰 ข่าวล่าสุด
+📰 News Sentiment: {news_trend}
 
-{chr(10).join(news)}
+🧠 ข่าวล่าสุด
 
-⚠️ ใช้เป็นข้อมูลประกอบการตัดสินใจเท่านั้น
+{chr("\n").join(news)}
+
+⚠️ ใช้เพื่อประกอบการตัดสินใจเท่านั้น
 """
 
 # =========================
