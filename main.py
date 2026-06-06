@@ -1,7 +1,7 @@
 import os
 import requests
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -21,7 +21,8 @@ elif change < 0:
 else:
     trend = "Sideway ➖"
 
-now = datetime.now().strftime("%d/%m/%Y %H:%M")
+thai_time = datetime.utcnow() + timedelta(hours=7)
+now = thai_time.strftime("%d/%m/%Y %H:%M")
 message = f"""
 📊 AI Gold Analyst
 
