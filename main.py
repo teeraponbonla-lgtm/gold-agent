@@ -8,10 +8,31 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 # =========================
 # CONFIG
 # =========================
-TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 analyzer = SentimentIntensityAnalyzer()
+
+# =========================
+# SAFE FUNCTION
+# =========================
+def safe_last(series, default=0):
+    try:
+        if series is None or len(series) == 0:
+            return default
+        return series.iloc[-1]
+    except:
+        return default
+
+
+def safe_prev(series, default=0):
+    try:
+        if series is None or len(series) < 2:
+            return default
+        return series.iloc[-2]
+    except:
+        return default
+
 
 # =========================
 # DATA
@@ -22,8 +43,12 @@ df_1y = gold.history(period="1y")
 df_1m = gold.history(period="1mo")
 df_5d = gold.history(period="5d")
 
-price = round(df_1y["Close"].iloc[-1], 2)
-prev = round(df_1y["Close"].iloc[-2], 2)
+# กัน data ว่าง
+if df_1y is None or df_1y.empty:
+    raise Exception("❌ No data from yfinance")
+
+price = round(safe_last(df_1y["Close"]), 2)
+prev = round(safe_prev(df_1y["Close"]), 2)
 change = round(price - prev, 2)
 
 # =========================
@@ -39,15 +64,19 @@ df_1m = add_ema(df_1m)
 df_5d = add_ema(df_5d)
 
 # =========================
-# TREND SCORE (MULTI TIMEFRAME)
+# TREND SCORE
 # =========================
 def trend_score(df):
-    score = 0
-    if df["Close"].iloc[-1] > df["EMA20"].iloc[-1]:
-        score += 1
-    if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1]:
-        score += 1
-    return score
+    try:
+        score = 0
+        if df["Close"].iloc[-1] > df["EMA20"].iloc[-1]:
+            score += 1
+        if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1]:
+            score += 1
+        return score
+    except:
+        return 0
+
 
 score = 0
 score += trend_score(df_5d) * 2
@@ -55,9 +84,10 @@ score += trend_score(df_1m) * 3
 score += trend_score(df_1y) * 5
 
 # =========================
-# RSI (SHORT TERM)
+# RSI (SAFE)
 # =========================
 delta = df_5d["Close"].diff()
+
 gain = delta.where(delta > 0, 0)
 loss = -delta.where(delta < 0, 0)
 
@@ -65,11 +95,12 @@ avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
 avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
 
 rs = avg_gain / avg_loss
-rsi = 100 - (100 / (1 + rs))
-rsi = round(rsi.iloc[-1], 2)
+rsi_raw = safe_last(100 - (100 / (1 + rs)), 50)
+
+rsi = round(rsi_raw if rsi_raw is not None else 50, 2)
 
 # =========================
-# NEWS AI SENTIMENT
+# NEWS AI SENTIMENT (SAFE)
 # =========================
 feed = feedparser.parse(
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F&region=US&lang=en-US"
@@ -78,18 +109,24 @@ feed = feedparser.parse(
 news_list = []
 news_score = 0
 
-for item in feed.entries[:5]:
-    sentiment = analyzer.polarity_scores(item.title)["compound"]
+entries = getattr(feed, "entries", [])
 
-    if sentiment > 0.1:
-        tag = "🟢 บวกต่อทอง"
-    elif sentiment < -0.1:
-        tag = "🔴 ลบต่อทอง"
-    else:
-        tag = "⚪ เป็นกลาง"
+for item in entries[:5]:
+    try:
+        sentiment = analyzer.polarity_scores(item.title)["compound"]
 
-    news_score += sentiment
-    news_list.append(f"{tag} ({sentiment:.2f}) • {item.title}")
+        if sentiment > 0.1:
+            tag = "🟢 บวกต่อทอง"
+        elif sentiment < -0.1:
+            tag = "🔴 ลบต่อทอง"
+        else:
+            tag = "⚪ เป็นกลาง"
+
+        news_score += sentiment
+        news_list.append(f"{tag} ({sentiment:.2f}) • {item.title}")
+
+    except:
+        continue
 
 # =========================
 # FINAL SCORE ENGINE
@@ -131,10 +168,12 @@ else:
 now = (datetime.now() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 
 # =========================
-# MESSAGE
+# MESSAGE (SAFE JOIN)
 # =========================
+news_text = "\n".join(news_list) if news_list else "ไม่มีข่าว"
+
 message = f"""
-🤖📊 AI Gold Analyst v5 Ultimate (PRO VERSION)
+🤖📊 AI Gold Analyst v5 Ultimate (PRO VERSION - SAFE)
 
 🕒 {now}
 
@@ -154,17 +193,24 @@ message = f"""
 
 📰 NEWS BREAKDOWN
 
-{chr(10).join(news_list)}
+{news_text}
 
 ⚠️ AI วิเคราะห์เพื่อประกอบการตัดสินใจ ไม่ใช่คำแนะนำลงทุน
 """
 
 # =========================
-# SEND TELEGRAM
+# SEND TELEGRAM (SAFE)
 # =========================
-url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+if TOKEN and CHAT_ID:
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    try:
+        requests.post(url, data={
+            "chat_id": CHAT_ID,
+            "text": message
+        })
+    except Exception as e:
+        print("Telegram error:", e)
+else:
+    print("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID")
 
-requests.post(url, data={
-    "chat_id": CHAT_ID,
-    "text": message
-})
+print("DONE")
