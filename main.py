@@ -78,6 +78,10 @@ Change: {change}
 
 Trend: {trend}
 
+🎯 Signal: {signal}
+
+🔥 Confidence: {confidence}%
+
 📰 ข่าวล่าสุด
 
 {chr(10).join(news)}
