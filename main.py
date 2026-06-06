@@ -12,7 +12,7 @@ hist = gold.history(period="2d")
 current = round(hist["Close"].iloc[-1], 2)
 previous = round(hist["Close"].iloc[-2], 2)
 
-change = current - previous
+change = round(current - previous, 2)
 
 if change > 0:
     trend = "Bullish 📈"
