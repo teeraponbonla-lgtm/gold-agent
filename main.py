@@ -3,6 +3,7 @@ import requests
 import yfinance as yf
 import feedparser
 from datetime import datetime, timedelta
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # =========================
 # CONFIG
@@ -10,34 +11,53 @@ from datetime import datetime, timedelta
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
+analyzer = SentimentIntensityAnalyzer()
+
 # =========================
-# GOLD DATA
+# DATA
 # =========================
 gold = yf.Ticker("GC=F")
-hist = gold.history(period="1y")
 
-current = round(hist["Close"].iloc[-1], 2)
-previous = round(hist["Close"].iloc[-2], 2)
-change = round(current - previous, 2)
+df_1y = gold.history(period="1y")
+df_1m = gold.history(period="1mo")
+df_5d = gold.history(period="5d")
 
-# =========================
-# EMA
-# =========================
-hist["EMA20"] = hist["Close"].ewm(span=20, adjust=False).mean()
-hist["EMA50"] = hist["Close"].ewm(span=50, adjust=False).mean()
-hist["EMA100"] = hist["Close"].ewm(span=100, adjust=False).mean()
-hist["EMA200"] = hist["Close"].ewm(span=200, adjust=False).mean()
-
-ema20 = round(hist["EMA20"].iloc[-1], 2)
-ema50 = round(hist["EMA50"].iloc[-1], 2)
-ema100 = round(hist["EMA100"].iloc[-1], 2)
-ema200 = round(hist["EMA200"].iloc[-1], 2)
+price = round(df_1y["Close"].iloc[-1], 2)
+prev = round(df_1y["Close"].iloc[-2], 2)
+change = round(price - prev, 2)
 
 # =========================
-# RSI (Wilder)
+# EMA FUNCTION
 # =========================
-delta = hist["Close"].diff()
+def add_ema(df):
+    df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    return df
 
+df_1y = add_ema(df_1y)
+df_1m = add_ema(df_1m)
+df_5d = add_ema(df_5d)
+
+# =========================
+# TREND SCORE (MULTI TIMEFRAME)
+# =========================
+def trend_score(df):
+    score = 0
+    if df["Close"].iloc[-1] > df["EMA20"].iloc[-1]:
+        score += 1
+    if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1]:
+        score += 1
+    return score
+
+score = 0
+score += trend_score(df_5d) * 2
+score += trend_score(df_1m) * 3
+score += trend_score(df_1y) * 5
+
+# =========================
+# RSI (SHORT TERM)
+# =========================
+delta = df_5d["Close"].diff()
 gain = delta.where(delta > 0, 0)
 loss = -delta.where(delta < 0, 0)
 
@@ -45,150 +65,106 @@ avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
 avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
 
 rs = avg_gain / avg_loss
-hist["RSI"] = 100 - (100 / (1 + rs))
-
-rsi = round(hist["RSI"].iloc[-1], 2)
-
-# =========================
-# TREND
-# =========================
-trend = "Sideway ➖"
-if change > 0:
-    trend = "Bullish 📈"
-elif change < 0:
-    trend = "Bearish 📉"
+rsi = 100 - (100 / (1 + rs))
+rsi = round(rsi.iloc[-1], 2)
 
 # =========================
-# SIGNAL (basic logic)
-# =========================
-signal = "SIDEWAY ➖"
-confidence = 50
-
-if current < ema20 and ema20 < ema50:
-    signal = "SELL 📉"
-    confidence = 75
-
-elif current > ema20 and ema20 > ema50:
-    signal = "BUY 📈"
-    confidence = 75
-
-if rsi < 25:
-    signal = "WATCH REBOUND ⚠️"
-    confidence = 60
-
-# =========================
-# NEWS SENTIMENT AI (KEYWORD)
-# =========================
-def analyze_news(title):
-    title = title.lower()
-
-    bullish_keywords = [
-        "inflation", "rate cut", "dovish", "weak dollar",
-        "recession", "safe haven", "gold demand",
-        "geopolitical", "crisis", "uncertainty"
-    ]
-
-    bearish_keywords = [
-        "rate hike", "hawkish", "strong dollar",
-        "bond yields rise", "risk-on", "stock rally",
-        "fed tightening", "economic growth"
-    ]
-
-    score = 0
-
-    for w in bullish_keywords:
-        if w in title:
-            score += 1
-
-    for w in bearish_keywords:
-        if w in title:
-            score -= 1
-
-    if score > 0:
-        return "🟢 บวกต่อทอง"
-    elif score < 0:
-        return "🔴 ลบต่อทอง"
-    else:
-        return "⚪ เป็นกลาง"
-
-# =========================
-# NEWS FETCH
+# NEWS AI SENTIMENT
 # =========================
 feed = feedparser.parse(
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F&region=US&lang=en-US"
 )
 
-news = []
+news_list = []
 news_score = 0
 
 for item in feed.entries[:5]:
-    sentiment = analyze_news(item.title)
+    sentiment = analyzer.polarity_scores(item.title)["compound"]
 
-    if "🟢" in sentiment:
-        news_score += 1
-    elif "🔴" in sentiment:
-        news_score -= 1
+    if sentiment > 0.1:
+        tag = "🟢 บวกต่อทอง"
+    elif sentiment < -0.1:
+        tag = "🔴 ลบต่อทอง"
+    else:
+        tag = "⚪ เป็นกลาง"
 
-    news.append(f"{sentiment} • {item.title}")
+    news_score += sentiment
+    news_list.append(f"{tag} ({sentiment:.2f}) • {item.title}")
 
 # =========================
-# NEWS IMPACT SUMMARY
+# FINAL SCORE ENGINE
 # =========================
-if news_score > 0:
-    news_trend = "🟢 ข่าวรวมเป็นบวกต่อทอง"
-elif news_score < 0:
-    news_trend = "🔴 ข่าวรวมเป็นลบต่อทอง"
+final_score = score + (news_score * 3)
+
+if final_score >= 8:
+    signal = "BUY 📈"
+elif final_score <= -8:
+    signal = "SELL 📉"
 else:
-    news_trend = "⚪ ข่าวออกกลาง ๆ"
+    signal = "HOLD ➖"
+
+confidence = min(95, int(abs(final_score) * 10) + 50)
+
+# =========================
+# RISK ZONE
+# =========================
+if rsi < 30:
+    risk = "⚠️ Oversold (เสี่ยงเด้ง)"
+elif rsi > 70:
+    risk = "⚠️ Overbought (เสี่ยงย่อ)"
+else:
+    risk = "ปกติ"
+
+# =========================
+# TREND LABEL
+# =========================
+if change > 0:
+    trend = "Bullish 📈"
+elif change < 0:
+    trend = "Bearish 📉"
+else:
+    trend = "Sideway ➖"
 
 # =========================
 # TIME
 # =========================
-thai_time = datetime.now() + timedelta(hours=7)
-now = thai_time.strftime("%d/%m/%Y %H:%M")
+now = (datetime.now() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 
 # =========================
 # MESSAGE
 # =========================
 message = f"""
-📊 AI Gold Analyst (v3 - AI News Sentiment)
+🤖📊 AI Gold Analyst v5 Ultimate (PRO VERSION)
 
-🕒 {now} น.
+🕒 {now}
 
-💰 Gold Price: {current}
+💰 Price: {price}
 📉 Change: {change}
 
-📊 EMA
-EMA20 : {ema20}
-EMA50 : {ema50}
-EMA100: {ema100}
-EMA200: {ema200}
+📊 Trend: {trend}
 
-📈 RSI14 : {rsi}
+📈 RSI: {rsi}
+⚠️ Risk: {risk}
 
-📌 Trend: {trend}
-
+🧠 Market Score: {final_score:.2f}
 🎯 Signal: {signal}
 🔥 Confidence: {confidence}%
 
-📰 News Sentiment: {news_trend}
+🧠 News Impact Score: {round(news_score,2)}
 
-🧠 ข่าวล่าสุด
+📰 NEWS BREAKDOWN
 
-{chr("\n").join(news)}
+{chr(10).join(news_list)}
 
-⚠️ ใช้เพื่อประกอบการตัดสินใจเท่านั้น
+⚠️ AI วิเคราะห์เพื่อประกอบการตัดสินใจ ไม่ใช่คำแนะนำลงทุน
 """
 
 # =========================
-# SEND TO TELEGRAM
+# SEND TELEGRAM
 # =========================
 url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-requests.post(
-    url,
-    data={
-        "chat_id": CHAT_ID,
-        "text": message
-    }
-)
+requests.post(url, data={
+    "chat_id": CHAT_ID,
+    "text": message
+})
