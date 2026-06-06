@@ -23,6 +23,25 @@ ema20 = round(hist["EMA20"].iloc[-1], 2)
 ema50 = round(hist["EMA50"].iloc[-1], 2)
 ema100 = round(hist["EMA100"].iloc[-1], 2)
 ema200 = round(hist["EMA200"].iloc[-1], 2)
+
+signal = "SIDEWAY ➖"
+confidence = 50
+
+if current > ema20 > ema50 > ema100 > ema200:
+    signal = "BUY 📈"
+    confidence = 85
+
+elif current < ema20 < ema50 < ema100 < ema200:
+    signal = "SELL 📉"
+    confidence = 85
+
+elif current > ema20 and current > ema50:
+    signal = "BUY 📈"
+    confidence = 70
+
+elif current < ema20 and current < ema50:
+    signal = "SELL 📉"
+    confidence = 70
 # ===== NEWS =====
 
 feed = feedparser.parse(
