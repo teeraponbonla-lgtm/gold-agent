@@ -66,7 +66,37 @@ rs = gain.ewm(alpha=1/14).mean() / loss.ewm(alpha=1/14).mean()
 rsi = float((100 - (100 / (1 + rs))).iloc[-1])
 
 # =========================
-# NEWS (INDIVIDUAL)
+# NEWS LABEL TRANSLATE
+# =========================
+def translate_label(sentiment):
+    if sentiment > 0.3:
+        return "🟢 ขาขึ้นแรง", 0.6, "Strong Bullish"
+    elif sentiment > 0.1:
+        return "🟢 ขาขึ้น", 0.2, "Bullish"
+    elif sentiment < -0.3:
+        return "🔴 ขาลงแรง", -0.6, "Strong Bearish"
+    elif sentiment < -0.1:
+        return "🔴 ขาลง", -0.2, "Bearish"
+    else:
+        return "⚪ เป็นกลาง", 0, "Neutral"
+
+def thai_title(title):
+    mapping = {
+        "Gold": "ทองคำ",
+        "Fed": "ธนาคารกลางสหรัฐ",
+        "inflation": "เงินเฟ้อ",
+        "rate": "ดอกเบี้ย",
+        "market": "ตลาด",
+        "stocks": "หุ้น"
+    }
+
+    for k, v in mapping.items():
+        title = title.replace(k, v)
+
+    return title
+
+# =========================
+# NEWS
 # =========================
 feed = feedparser.parse(
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F&region=US&lang=en-US"
@@ -79,28 +109,16 @@ for item in feed.entries[:6]:
     title = item.title
     sentiment = analyzer.polarity_scores(title)["compound"]
 
-    if sentiment > 0.3:
-        label = "🟢 STRONG BULLISH"
-        expected = 0.6
-    elif sentiment > 0.1:
-        label = "🟢 BULLISH"
-        expected = 0.2
-    elif sentiment < -0.3:
-        label = "🔴 STRONG BEARISH"
-        expected = -0.6
-    elif sentiment < -0.1:
-        label = "🔴 BEARISH"
-        expected = -0.2
-    else:
-        label = "⚪ NEUTRAL"
-        expected = 0
+    label_th, expected, label_en = translate_label(sentiment)
 
     actual = expected + random.uniform(-0.3, 0.3)
     accuracy = max(0, 1 - abs(expected - actual))
 
     news_items.append({
         "title": title,
-        "label": label,
+        "title_th": thai_title(title),
+        "label_th": label_th,
+        "label_en": label_en,
         "sentiment": sentiment,
         "expected": expected,
         "actual": actual,
@@ -115,20 +133,20 @@ ema50 = df["EMA50"].iloc[-1]
 ema200 = df["EMA200"].iloc[-1]
 
 if price > ema20 > ema50 > ema200:
-    regime = "📈 Strong Uptrend"
+    regime = "📈 Uptrend"
 elif price < ema20 < ema50 < ema200:
-    regime = "📉 Strong Downtrend"
+    regime = "📉 Downtrend"
 elif rsi < 25:
-    regime = "⚠️ Oversold Reversal"
+    regime = "⚠️ Oversold"
 elif rsi > 75:
-    regime = "⚠️ Overbought Reversal"
+    regime = "⚠️ Overbought"
 else:
     regime = "➖ Sideway"
 
 # =========================
 # SIGNAL
 # =========================
-score = trend_score + (sum([n["expected"] for n in news_items]) * 5)
+score = trend_score + sum([n["expected"] for n in news_items]) * 5
 prob = max(0, min(95, 50 + score))
 
 if prob > 70:
@@ -138,49 +156,42 @@ elif prob < 30:
 else:
     signal = "HOLD ⏳"
 
-confidence = int(abs(prob - 50) * 2)
-confidence = max(10, min(95, confidence))
+confidence = max(10, min(95, int(abs(prob - 50) * 2)))
 
 # =========================
-# TP / SL (FIXED - ALWAYS SHOW)
+# TP / SL (ALWAYS SHOW)
 # =========================
 def tp_sl(signal, price):
 
     if "BUY" in signal:
-        return (
-            price*1.005, price*1.01, price*1.02,
-            price*0.995, price*0.99, price*0.985
-        )
+        return price*1.005, price*1.01, price*1.02, price*0.995, price*0.99, price*0.985
 
     elif "SELL" in signal:
-        return (
-            price*0.995, price*0.99, price*0.98,
-            price*1.005, price*1.01, price*1.015
-        )
+        return price*0.995, price*0.99, price*0.98, price*1.005, price*1.01, price*1.015
 
     else:
-        # HOLD / WAIT → still planning
-        return (
-            price*1.003, price*1.008, price*1.015,
-            price*0.997, price*0.992, price*0.985
-        )
+        return price*1.003, price*1.008, price*1.015, price*0.997, price*0.992, price*0.985
 
 tp1, tp2, tp3, sl1, sl2, sl3 = tp_sl(signal, price)
 
 # =========================
 # NEWS TEXT
 # =========================
-news_text = "📰 INDIVIDUAL NEWS ANALYSIS\n"
+news_text = "📰 วิเคราะห์ข่าวรายตัว\n"
 
 for i, n in enumerate(news_items, 1):
     news_text += f"""
-🧾 NEWS #{i}
-{n['label']}
+🧾 ข่าว #{i}
+
+{n['label_th']} ({n['label_en']})
 📊 Sentiment: {n['sentiment']:.2f}
-📈 Expected: {n['expected']:+.2f}%
-📉 Actual: {n['actual']:+.2f}%
-🎯 Accuracy: {n['accuracy']*100:.1f}%
+📈 คาดการณ์: {n['expected']:+.2f}%
+📉 ผลจริง: {n['actual']:+.2f}%
+🎯 ความแม่นยำ: {n['accuracy']*100:.1f}%
+
 📰 {n['title']}
+({n['title_th']})
+
 --------------------
 """
 
@@ -193,7 +204,7 @@ now = (datetime.now() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 # MESSAGE
 # =========================
 message = f"""
-🤖📊 AI HEDGE FUND v10 (FIXED)
+🤖📊 AI HEDGE FUND v10 (THAI UPGRADED)
 
 🕒 {now}
 
@@ -224,7 +235,7 @@ SL3: {round(sl3,2)}
 """
 
 # =========================
-# SEND
+# SEND TELEGRAM
 # =========================
 if TOKEN and CHAT_ID:
     requests.post(
