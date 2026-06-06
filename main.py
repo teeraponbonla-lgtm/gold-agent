@@ -21,7 +21,7 @@ elif change < 0:
 else:
     trend = "Sideway ➖"
 
-thai_time = datetime.utcnow() + timedelta(hours=7)
+thai_time = datetime.now() + timedelta(hours=7)
 now = thai_time.strftime("%d/%m/%Y %H:%M")
 message = f"""
 📊 AI Gold Analyst
