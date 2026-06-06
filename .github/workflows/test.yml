@@ -1,16 +1,28 @@
-name: Telegram Test
+name: Gold Agent
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 * * * *'
 
 jobs:
-  send:
+  run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Send Telegram Message
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install packages
         run: |
-          curl -X POST \
-          https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
-          -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
-          -d text="🚀 Gold Agent Running"
+          pip install -r requirements.txt
+
+      - name: Run Gold Agent
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python main.py
