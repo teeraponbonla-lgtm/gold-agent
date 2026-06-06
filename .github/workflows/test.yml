@@ -3,7 +3,8 @@ name: Gold Agent
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *'
+  - cron: '*/30 * * * *'
+  
 
 jobs:
   run:
