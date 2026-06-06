@@ -1,6 +1,7 @@
 import os
 import requests
 import yfinance as yf
+from datetime import datetime
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -20,8 +21,11 @@ elif change < 0:
 else:
     trend = "Sideway ➖"
 
+now = datetime.now().strftime("%d/%m/%Y %H:%M")
 message = f"""
-📈 XAUUSD REPORT
+📊 AI Gold Analyst
+
+🕒 {now} น.
 
 Gold Price: {current}
 
