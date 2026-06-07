@@ -4,33 +4,30 @@ import yfinance as yf
 import feedparser
 from datetime import datetime, timedelta
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-import anthropic
 
 # =========================
 # CONFIG
 # =========================
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-ANTHROPIC_API_KEY = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+TOKEN         = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID       = os.environ.get("TELEGRAM_CHAT_ID")
+GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
 
 analyzer = SentimentIntensityAnalyzer()
-claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # =========================
 # DATA
 # =========================
-gold = yf.Ticker("GC=F")
+gold  = yf.Ticker("GC=F")
+df    = gold.history(period="1y")    # หลัก: EMA, RSI, ATR, Trend
+df_1m = gold.history(period="1mo")   # Trend 1 เดือน
+df_5d = gold.history(period="5d")    # Trend 5 วัน
 
-df     = gold.history(period="1y")   # ใช้หลัก: EMA, RSI, Regime, Trend
-df_1m  = gold.history(period="1mo")  # Trend 1 เดือน
-df_5d  = gold.history(period="5d")   # Trend 5 วัน
-
-price = float(df["Close"].iloc[-1])
-prev  = float(df["Close"].iloc[-2])
+price  = float(df["Close"].iloc[-1])
+prev   = float(df["Close"].iloc[-2])
 change = round(price - prev, 2)
 
 # =========================
-# EMA — คำนวณครั้งเดียวจาก df (1y) แล้ว slice
+# EMA
 # =========================
 def add_ema(d):
     d = d.copy()
@@ -48,7 +45,7 @@ ema50  = float(df["EMA50"].iloc[-1])
 ema200 = float(df["EMA200"].iloc[-1])
 
 # =========================
-# ATR (14) — สำหรับ TP/SL แบบ dynamic
+# ATR (14) — สำหรับ TP/SL dynamic
 # =========================
 def calc_atr(d, period=14):
     high  = d["High"]
@@ -57,7 +54,7 @@ def calc_atr(d, period=14):
     tr = (high - low).combine(
         (high - close).abs(), max
     ).combine(
-        (low - close).abs(), max
+        (low  - close).abs(), max
     )
     return float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
 
@@ -66,15 +63,13 @@ atr = calc_atr(df)
 # =========================
 # RSI (14) — คำนวณจาก df (1y) เพื่อข้อมูลเพียงพอ
 # =========================
-delta = df["Close"].diff()
-gain  = delta.where(delta > 0, 0.0)
-loss  = -delta.where(delta < 0, 0.0)
-
+delta    = df["Close"].diff()
+gain     = delta.where(delta > 0, 0.0)
+loss     = -delta.where(delta < 0, 0.0)
 avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
 avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-
-rs  = avg_gain / avg_loss
-rsi = float((100 - (100 / (1 + rs))).iloc[-1])
+rs       = avg_gain / avg_loss
+rsi      = float((100 - (100 / (1 + rs))).iloc[-1])
 
 # =========================
 # EMA POSITION
@@ -82,18 +77,19 @@ rsi = float((100 - (100 / (1 + rs))).iloc[-1])
 def pos(p, e):
     return "🟢 เหนือ" if p > e else "🔴 ใต้"
 
-ema_block = f"""📊 EMA STATUS
-EMA20  : {round(ema20,2)}  ({pos(price, ema20)})
-EMA50  : {round(ema50,2)}  ({pos(price, ema50)})
-EMA200 : {round(ema200,2)} ({pos(price, ema200)})"""
+ema_block = (
+    f"📊 EMA STATUS\n"
+    f"EMA20  : {round(ema20,2)}  ({pos(price, ema20)})\n"
+    f"EMA50  : {round(ema50,2)}  ({pos(price, ema50)})\n"
+    f"EMA200 : {round(ema200,2)} ({pos(price, ema200)})"
+)
 
 # =========================
 # TREND SCORE
 # =========================
 def trend_score_df(d):
-    """คืนค่า 0–3 ตามจำนวนเงื่อนไข bullish ที่เป็นจริง"""
-    s = 0
-    p = float(d["Close"].iloc[-1])
+    s    = 0
+    p    = float(d["Close"].iloc[-1])
     e20  = float(d["EMA20"].iloc[-1])
     e50  = float(d["EMA50"].iloc[-1])
     e200 = float(d["EMA200"].iloc[-1])
@@ -102,13 +98,11 @@ def trend_score_df(d):
     if e50 > e200: s += 1
     return s
 
-# ถ่วงน้ำหนัก: 5d=30%, 1m=35%, 1y=35% → max = 9 * 1/3 ≈ 3 แต่ normalize ต่อท้าย
 raw_trend = (
     trend_score_df(df_5d) * 0.30 +
     trend_score_df(df_1m) * 0.35 +
     trend_score_df(df)    * 0.35
 )
-# raw_trend อยู่ในช่วง 0–3 → normalize เป็น -1 ถึง +1
 trend_normalized = (raw_trend / 3) * 2 - 1  # -1=full bear, +1=full bull
 
 # =========================
@@ -126,45 +120,63 @@ else:
     regime = "➖ Sideway"
 
 # =========================
-# NEWS — แปลโดย Claude API
+# TRANSLATE NEWS — Gemini API (ฟรี)
 # =========================
-def translate_news_claude(titles: list[str]) -> list[str]:
-    """แปลหัวข้อข่าวภาษาอังกฤษเป็นภาษาไทยที่อ่านเข้าใจง่าย"""
-    if not ANTHROPIC_API_KEY:
+def translate_news_gemini(titles: list) -> list:
+    """แปลหัวข้อข่าวเป็นภาษาไทยโดยใช้ Gemini API"""
+    if not GEMINI_API_KEY:
         return titles  # fallback ถ้าไม่มี key
 
     numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
     prompt = (
-        "แปลหัวข้อข่าวการเงินต่อไปนี้เป็นภาษาไทยที่อ่านเข้าใจง่าย กระชับ และถูกต้องตามบริบทการลงทุน "
-        "ไม่ต้องแปลตรงตัวทุกคำ ให้ได้ใจความที่ชัดเจน ตอบเฉพาะหัวข้อที่แปลแล้ว ไม่ต้องมีคำอธิบายเพิ่ม "
+        "แปลหัวข้อข่าวการเงินต่อไปนี้เป็นภาษาไทยที่อ่านเข้าใจง่าย กระชับ "
+        "และถูกต้องตามบริบทการลงทุน ไม่ต้องแปลตรงตัวทุกคำ ให้ได้ใจความที่ชัดเจน "
+        "ตอบเฉพาะหัวข้อที่แปลแล้ว ไม่ต้องมีคำอธิบายเพิ่ม "
         "รูปแบบ: หมายเลข. หัวข้อภาษาไทย\n\n"
         f"{numbered}"
     )
 
-    message = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     )
 
-    lines = message.content[0].text.strip().split("\n")
-    result = []
-    for line in lines:
-        # ตัดหมายเลขนำหน้าออก เช่น "1. " หรือ "1) "
-        line = line.strip()
-        if line and line[0].isdigit():
-            line = line.split(".", 1)[-1].strip()
-            line = line.split(")", 1)[-1].strip()
-        if line:
-            result.append(line)
+    try:
+        resp = requests.post(
+            url,
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=15
+        )
+        resp.raise_for_status()
+        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
-    # กรณี Claude ตอบน้อยกว่า ให้ fallback เป็น title เดิม
-    while len(result) < len(titles):
-        result.append(titles[len(result)])
+        lines  = text.strip().split("\n")
+        result = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # ตัดหมายเลขนำหน้า เช่น "1. " หรือ "1) "
+            if line and line[0].isdigit():
+                line = line.split(".", 1)[-1].strip()
+                line = line.split(")", 1)[-1].strip()
+            if line:
+                result.append(line)
 
-    return result[:len(titles)]
+        # fallback ถ้าได้น้อยกว่า
+        while len(result) < len(titles):
+            result.append(titles[len(result)])
 
-def sentiment_label(score: float) -> tuple[str, float, str]:
+        return result[:len(titles)]
+
+    except Exception as e:
+        print(f"Gemini translate error: {e}")
+        return titles  # fallback เป็น title เดิม
+
+# =========================
+# NEWS SENTIMENT
+# =========================
+def sentiment_label(score: float):
     if score > 0.3:
         return "🟢 ขาขึ้นแรง", 0.6,  "Strong Bullish"
     elif score > 0.1:
@@ -174,14 +186,13 @@ def sentiment_label(score: float) -> tuple[str, float, str]:
     elif score < -0.1:
         return "🔴 ขาลง",   -0.2, "Bearish"
     else:
-        return "⚪ เป็นกลาง", 0.0,  "Neutral"
+        return "⚪ เป็นกลาง",  0.0, "Neutral"
 
-feed = feedparser.parse(
+feed       = feedparser.parse(
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F&region=US&lang=en-US"
 )
-
 raw_titles = [item.title for item in feed.entries[:6]]
-thai_titles = translate_news_claude(raw_titles)
+thai_titles = translate_news_gemini(raw_titles)
 
 news_items = []
 for eng, th in zip(raw_titles, thai_titles):
@@ -197,16 +208,11 @@ for eng, th in zip(raw_titles, thai_titles):
     })
 
 # =========================
-# SIGNAL — normalize รวม trend + sentiment
+# SIGNAL
 # =========================
-avg_sentiment = sum(n["expected"] for n in news_items) / max(len(news_items), 1)
-# avg_sentiment อยู่ในช่วง -0.6 ถึง +0.6
-
-# รวมสัญญาณ: trend 60%, sentiment 40%
-combined = trend_normalized * 0.60 + avg_sentiment * 0.40
-
-# map combined (-1 ถึง +1) → prob (0 ถึง 100)
-prob = round(max(0, min(100, 50 + combined * 50)), 2)
+avg_sentiment    = sum(n["expected"] for n in news_items) / max(len(news_items), 1)
+combined         = trend_normalized * 0.60 + avg_sentiment * 0.40
+prob             = round(max(0, min(100, 50 + combined * 50)), 2)
 
 if prob >= 65:
     signal = "BUY 📈"
@@ -218,35 +224,23 @@ else:
 confidence = int(min(95, abs(prob - 50) * 2))
 
 # =========================
-# TP / SL — ใช้ ATR แทน fixed %
+# TP / SL — ใช้ ATR
 # =========================
 def tp_sl_atr(signal, price, atr):
     if "BUY" in signal:
         return (
-            round(price + atr * 0.8, 2),
-            round(price + atr * 1.5, 2),
-            round(price + atr * 2.5, 2),
-            round(price - atr * 0.8, 2),
-            round(price - atr * 1.5, 2),
-            round(price - atr * 2.2, 2),
+            round(price + atr * 0.8, 2), round(price + atr * 1.5, 2), round(price + atr * 2.5, 2),
+            round(price - atr * 0.8, 2), round(price - atr * 1.5, 2), round(price - atr * 2.2, 2),
         )
     elif "SELL" in signal:
         return (
-            round(price - atr * 0.8, 2),
-            round(price - atr * 1.5, 2),
-            round(price - atr * 2.5, 2),
-            round(price + atr * 0.8, 2),
-            round(price + atr * 1.5, 2),
-            round(price + atr * 2.2, 2),
+            round(price - atr * 0.8, 2), round(price - atr * 1.5, 2), round(price - atr * 2.5, 2),
+            round(price + atr * 0.8, 2), round(price + atr * 1.5, 2), round(price + atr * 2.2, 2),
         )
     else:
         return (
-            round(price + atr * 0.8, 2),
-            round(price + atr * 1.5, 2),
-            round(price + atr * 2.5, 2),
-            round(price - atr * 0.8, 2),
-            round(price - atr * 1.5, 2),
-            round(price - atr * 2.2, 2),
+            round(price + atr * 0.8, 2), round(price + atr * 1.5, 2), round(price + atr * 2.5, 2),
+            round(price - atr * 0.8, 2), round(price - atr * 1.5, 2), round(price - atr * 2.2, 2),
         )
 
 tp1, tp2, tp3, sl1, sl2, sl3 = tp_sl_atr(signal, price, atr)
@@ -256,24 +250,24 @@ tp1, tp2, tp3, sl1, sl2, sl3 = tp_sl_atr(signal, price, atr)
 # =========================
 news_text = "📰 วิเคราะห์ข่าวรายตัว\n"
 for i, n in enumerate(news_items, 1):
-    news_text += f"""
-🧾 ข่าว #{i}
-{n['label_th']} ({n['label_en']})
-📊 Sentiment : {n['sentiment']:+.2f}
-📰 EN : {n['title_en']}
-🇹🇭 TH : {n['title_th']}
-{'─'*20}"""
+    news_text += (
+        f"\n🧾 ข่าว #{i}\n"
+        f"{n['label_th']} ({n['label_en']})\n"
+        f"📊 Sentiment : {n['sentiment']:+.2f}\n"
+        f"📰 EN : {n['title_en']}\n"
+        f"🇹🇭 TH : {n['title_th']}\n"
+        f"{'─'*20}"
+    )
 
 # =========================
-# TIME
+# TIME (UTC+7)
 # =========================
 now = (datetime.utcnow() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 
 # =========================
 # MESSAGE
 # =========================
-message = f"""
-🤖📊 AI HEDGE FUND v11
+message = f"""🤖📊 AI HEDGE FUND v12
 
 🕒 {now}
 
