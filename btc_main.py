@@ -12,15 +12,22 @@ TOKEN          = os.environ.get("TELEGRAM_TOKEN_BTC")
 CHAT_ID        = os.environ.get("TELEGRAM_CHAT_ID_BTC")
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
 
+# ดึงค่ากลุ่มจาก GitHub Secrets รองรับการเพิ่มกลุ่มในอนาคต (001, 002, 003)
+group_channels = [
+    os.environ.get("TELEGRAM_GROUP_CHAT_ID_001"),
+    os.environ.get("TELEGRAM_GROUP_CHAT_ID_002"),
+    os.environ.get("TELEGRAM_GROUP_CHAT_ID_003")
+]
+
 analyzer = SentimentIntensityAnalyzer()
 
 # =========================
 # DATA — BTC-USD
 # =========================
 btc   = yf.Ticker("BTC-USD")
-df    = btc.history(period="1y")     # หลัก: EMA, RSI, ATR, Trend
-df_1m = btc.history(period="1mo")    # Trend 1 เดือน
-df_5d = btc.history(period="5d")     # Trend 5 วัน
+df    = btc.history(period="1y")     
+df_1m = btc.history(period="1mo")    
+df_5d = btc.history(period="5d")     
 
 price  = float(df["Close"].iloc[-1])
 prev   = float(df["Close"].iloc[-2])
@@ -51,11 +58,7 @@ def calc_atr(d, period=14):
     high  = d["High"]
     low   = d["Low"]
     close = d["Close"].shift(1)
-    tr = (high - low).combine(
-        (high - close).abs(), max
-    ).combine(
-        (low - close).abs(), max
-    )
+    tr = (high - low).combine((high - close).abs(), max).combine((low - close).abs(), max)
     return float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
 
 atr = calc_atr(df)
@@ -78,7 +81,7 @@ def pos(p, e):
     return "🟢 เหนือ" if p > e else "🔴 ต่ำกว่า"
 
 ema_block = (
-    f"📊 สถานะ EMA\n"
+    f"📊 Status EMA\n"
     f"EMA20  : {round(ema20,2)}  ({pos(price, ema20)})\n"
     f"EMA50  : {round(ema50,2)}  ({pos(price, ema50)})\n"
     f"EMA200 : {round(ema200,2)} ({pos(price, ema200)})"
@@ -106,21 +109,21 @@ raw_trend = (
 trend_normalized = (raw_trend / 3) * 2 - 1
 
 # =========================
-# REGIME — BTC ผันผวนสูงกว่า ปรับ threshold
+# REGIME — BTC
 # =========================
 if price > ema20 > ema50 > ema200:
     regime = "📈 ขาขึ้น"
 elif price < ema20 < ema50 < ema200:
     regime = "📉 ขาลง"
-elif rsi < 20:                          # BTC ใช้ 20 แทน 25
+elif rsi < 20:                          
     regime = "⚠️ ซื้อมากเกิน"
-elif rsi > 80:                          # BTC ใช้ 80 แทน 75
+elif rsi > 80:                          
     regime = "⚠️ ขายมากเกิน"
 else:
     regime = "➖ ทรงตัว"
 
 # =========================
-# TRANSLATE NEWS — Gemini API
+# TRANSLATE NEWS — Gemini
 # =========================
 def translate_news_gemini(titles: list) -> list:
     if not GEMINI_API_KEY:
@@ -135,17 +138,10 @@ def translate_news_gemini(titles: list) -> list:
         f"{numbered}"
     )
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-3.1-flash-lite:generateContent?key={GEMINI_API_KEY}"
-    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_API_KEY}"
 
     try:
-        resp = requests.post(
-            url,
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=30
-        )
+        resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
         resp.raise_for_status()
         text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -153,19 +149,15 @@ def translate_news_gemini(titles: list) -> list:
         result = []
         for line in lines:
             line = line.strip()
-            if not line:
-                continue
+            if not line: continue
             if line and line[0].isdigit():
                 line = line.split(".", 1)[-1].strip()
                 line = line.split(")", 1)[-1].strip()
-            if line:
-                result.append(line)
+            if line: result.append(line)
 
         while len(result) < len(titles):
             result.append(titles[len(result)])
-
         return result[:len(titles)]
-
     except Exception as e:
         print(f"Gemini translate error: {e}")
         return titles
@@ -174,21 +166,13 @@ def translate_news_gemini(titles: list) -> list:
 # NEWS SENTIMENT
 # =========================
 def sentiment_label(score: float):
-    if score > 0.3:
-        return "🟢 ขาขึ้นแรง", 0.6,  "Strong Bullish"
-    elif score > 0.1:
-        return "🟢 ขาขึ้น",   0.2,  "Bullish"
-    elif score < -0.3:
-        return "🔴 ขาลงแรง", -0.6, "Strong Bearish"
-    elif score < -0.1:
-        return "🔴 ขาลง",   -0.2, "Bearish"
-    else:
-        return "⚪ เป็นกลาง",  0.0, "Neutral"
+    if score > 0.3:    return "🟢 ขาขึ้นแรง", 0.6,  "Strong Bullish"
+    elif score > 0.1:  return "🟢 ขาขึ้น",   0.2,  "Bullish"
+    elif score < -0.3: return "🔴 ขาลงแรง", -0.6, "Strong Bearish"
+    elif score < -0.1: return "🔴 ขาลง",   -0.2, "Bearish"
+    else:              return "⚪ เป็นกลาง",  0.0, "Neutral"
 
-# RSS ข่าว BTC
-feed = feedparser.parse(
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=BTC-USD&region=US&lang=en-US"
-)
+feed = feedparser.parse("https://feeds.finance.yahoo.com/rss/2.0/headline?s=BTC-USD&region=US&lang=en-US")
 raw_titles  = [item.title for item in feed.entries[:6]]
 thai_titles = translate_news_gemini(raw_titles)
 
@@ -197,12 +181,7 @@ for eng, th in zip(raw_titles, thai_titles):
     score = analyzer.polarity_scores(eng)["compound"]
     label_th, expected, label_en = sentiment_label(score)
     news_items.append({
-        "title_en":  eng,
-        "title_th":  th,
-        "label_th":  label_th,
-        "label_en":  label_en,
-        "sentiment": score,
-        "expected":  expected,
+        "title_en": eng, "title_th": th, "label_th": label_th, "label_en": label_en, "sentiment": score, "expected": expected,
     })
 
 # =========================
@@ -212,17 +191,14 @@ avg_sentiment = sum(n["expected"] for n in news_items) / max(len(news_items), 1)
 combined      = trend_normalized * 0.60 + avg_sentiment * 0.40
 prob          = round(max(0, min(100, 50 + combined * 50)), 2)
 
-if prob >= 65:
-    signal = "ซื้อ 📈"
-elif prob <= 35:
-    signal = "ขาย 📉"
-else:
-    signal = "ถือ ⏳"
+if prob >= 65:     signal = "ซื้อ 📈"
+elif prob <= 35:   signal = "ขาย 📉"
+else:              signal = "ถือ ⏳"
 
 confidence = int(min(95, abs(prob - 50) * 2))
 
 # =========================
-# TP / SL — ATR (BTC ผันผวนสูง ใช้ multiplier กว้างขึ้น)
+# TP / SL — ATR (BTC)
 # =========================
 def tp_sl_atr(signal, price, atr):
     if "ซื้อ" in signal:
@@ -274,7 +250,7 @@ message = f"""🤖₿ AI HEDGE FUND — BTC/USD
 📊 สภาวะ   : {regime}
 
 📊 เทรนด์  : {round(raw_trend, 2)}/3.0
-📈 RSI    : {round(rsi, 2)}
+📈 RSI     : {round(rsi, 2)}
 📰 ความรู้สึกตลาด : {avg_sentiment:+.2f}
 
 🎯 สัญญาณ    : {signal}
@@ -298,28 +274,21 @@ SL3 : ${sl3:,}
 """
 
 # =========================
-# SEND TELEGRAM (พร้อมระบบดักจับและพิมพ์ Debug Log)
+# SEND TELEGRAM
 # =========================
-print(f"--- [DEBUG] ตรวจสอบตัวแปรสภาพแวดล้อม ---")
-print(f"TELEGRAM_TOKEN_BTC: {'ดึงสำเร็จ (มีค่า)' if TOKEN else '❌ ว่างเปล่า (None)'}")
-print(f"TELEGRAM_CHAT_ID_BTC: {'ดึงสำเร็จ (มีค่า)' if CHAT_ID else '❌ ว่างเปล่า (None)'}")
-print(f"----------------------------------------")
-
-if TOKEN and CHAT_ID:
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        resp = requests.post(
-            url,
-            data={"chat_id": CHAT_ID, "text": message},
-            timeout=15
-        )
-        print("Telegram Response Status:", resp.status_code)
-        if resp.status_code != 200:
-            print("Telegram Error Details:", resp.text)
-    except Exception as e:
-        print("❌ เกิดความผิดพลาดทางเครือข่ายขณะติดต่อ Telegram API:", e)
-else:
-    print("❌ ระบบไม่พยายามส่งเข้า Telegram เพราะขาด TOKEN หรือ CHAT_ID (โปรดเช็ก GitHub Secrets)")
+if TOKEN:
+    # 1. ยิงเข้าแชตส่วนตัวของ BTC
+    if CHAT_ID:
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": message})
+        
+    # 2. วนลูปยิงเข้าทุกกลุ่มที่เปิดใช้งานใน GitHub Secrets (001, 002, 003)
+    for group_id in group_channels:
+        if group_id:
+            try:
+                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": group_id, "text": message}, timeout=15)
+                print(f"🟢 ส่งเข้ากลุ่ม {group_id} สำเร็จ")
+            except Exception as e:
+                print(f"❌ ส่งเข้ากลุ่ม {group_id} ล้มเหลว:", e)
 
 print(message)
 print("DONE")
