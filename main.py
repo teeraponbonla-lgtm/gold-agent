@@ -138,21 +138,17 @@ def translate_news_gemini(titles: list) -> list:
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        f"gemini-1.5-flash-8b:generateContent?key={GEMINI_API_KEY}"
     )
 
     try:
-        print(f"[DEBUG] GEMINI_API_KEY present: {bool(GEMINI_API_KEY)}, starts: {GEMINI_API_KEY[:6] if GEMINI_API_KEY else 'N/A'}")
         resp = requests.post(
             url,
             json={"contents": [{"parts": [{"text": prompt}]}]},
             timeout=15
         )
-        print(f"[DEBUG] Gemini status: {resp.status_code}")
-        print(f"[DEBUG] Gemini response: {resp.text[:400]}")
         resp.raise_for_status()
         text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-        print(f"[DEBUG] Gemini translated: {text[:200]}")
 
         lines  = text.strip().split("\n")
         result = []
