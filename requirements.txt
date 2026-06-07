@@ -4,4 +4,3 @@ feedparser
 vaderSentiment
 pandas
 numpy
-anthropic
