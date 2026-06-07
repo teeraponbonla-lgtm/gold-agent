@@ -20,4 +20,8 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # 🟢 สะพานเชื่อมกลุ่มเพิ่มเข้ามาตรงนี้แล้วเพื่อน
+          TELEGRAM_GROUP_CHAT_ID_001: ${{ secrets.TELEGRAM_GROUP_CHAT_ID_001 }}
+          TELEGRAM_GROUP_CHAT_ID_002: ${{ secrets.TELEGRAM_GROUP_CHAT_ID_002 }}
+          TELEGRAM_GROUP_CHAT_ID_003: ${{ secrets.TELEGRAM_GROUP_CHAT_ID_003 }}
         run: python main.py
