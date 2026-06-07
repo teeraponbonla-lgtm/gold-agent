@@ -17,7 +17,8 @@ jobs:
           pip install -r requirements.txt
       - name: Run BTC Agent
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN_BTC }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_BTC }}
+          # แก้ไขฝั่งซ้ายมือ (Environment Variable ของระบบ) ให้มี _BTC ต่อท้าย เพื่อให้ Python เรียกใช้งานได้ถูกต้อง
+          TELEGRAM_TOKEN_BTC: ${{ secrets.TELEGRAM_TOKEN_BTC }}
+          TELEGRAM_CHAT_ID_BTC: ${{ secrets.TELEGRAM_CHAT_ID_BTC }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python btc_main.py
