@@ -11,7 +11,7 @@ import anthropic
 # =========================
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
 
 analyzer = SentimentIntensityAnalyzer()
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -142,7 +142,7 @@ def translate_news_claude(titles: list[str]) -> list[str]:
     )
 
     message = claude.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-haiku-4-5-20251001",
         max_tokens=800,
         messages=[{"role": "user", "content": prompt}]
     )
