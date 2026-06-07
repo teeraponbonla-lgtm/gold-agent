@@ -12,15 +12,22 @@ TOKEN         = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID       = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
 
+# ดึงค่ากลุ่มจาก GitHub Secrets รองรับการเพิ่มกลุ่มในอนาคต (001, 002, 003)
+group_channels = [
+    os.environ.get("TELEGRAM_GROUP_CHAT_ID_001"),
+    os.environ.get("TELEGRAM_GROUP_CHAT_ID_002"),
+    os.environ.get("TELEGRAM_GROUP_CHAT_ID_003")
+]
+
 analyzer = SentimentIntensityAnalyzer()
 
 # =========================
 # DATA
 # =========================
 gold  = yf.Ticker("GC=F")
-df    = gold.history(period="1y")    # หลัก: EMA, RSI, ATR, Trend
-df_1m = gold.history(period="1mo")   # Trend 1 เดือน
-df_5d = gold.history(period="5d")    # Trend 5 วัน
+df    = gold.history(period="1y")    
+df_1m = gold.history(period="1mo")   
+df_5d = gold.history(period="5d")    
 
 price  = float(df["Close"].iloc[-1])
 prev   = float(df["Close"].iloc[-2])
@@ -45,23 +52,19 @@ ema50  = float(df["EMA50"].iloc[-1])
 ema200 = float(df["EMA200"].iloc[-1])
 
 # =========================
-# ATR (14) — สำหรับ TP/SL dynamic
+# ATR (14)
 # =========================
 def calc_atr(d, period=14):
     high  = d["High"]
     low   = d["Low"]
     close = d["Close"].shift(1)
-    tr = (high - low).combine(
-        (high - close).abs(), max
-    ).combine(
-        (low  - close).abs(), max
-    )
+    tr = (high - low).combine((high - close).abs(), max).combine((low  - close).abs(), max)
     return float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
 
 atr = calc_atr(df)
 
 # =========================
-# RSI (14) — คำนวณจาก df (1y) เพื่อข้อมูลเพียงพอ
+# RSI (14)
 # =========================
 delta    = df["Close"].diff()
 gain     = delta.where(delta > 0, 0.0)
@@ -78,7 +81,7 @@ def pos(p, e):
     return "🟢 เหนือ" if p > e else "🔴 ต่ำกว่า"
 
 ema_block = (
-    f"📊 สถานะ EMA\n"
+    f"📊 Status EMA\n"
     f"EMA20  : {round(ema20,2)}  ({pos(price, ema20)})\n"
     f"EMA50  : {round(ema50,2)}  ({pos(price, ema50)})\n"
     f"EMA200 : {round(ema200,2)} ({pos(price, ema200)})"
@@ -103,7 +106,7 @@ raw_trend = (
     trend_score_df(df_1m) * 0.35 +
     trend_score_df(df)    * 0.35
 )
-trend_normalized = (raw_trend / 3) * 2 - 1  # -1=full bear, +1=full bull
+trend_normalized = (raw_trend / 3) * 2 - 1  
 
 # =========================
 # REGIME
@@ -120,12 +123,11 @@ else:
     regime = "➖ ทรงตัว"
 
 # =========================
-# TRANSLATE NEWS — Gemini API (ฟรี)
+# TRANSLATE NEWS — Gemini
 # =========================
 def translate_news_gemini(titles: list) -> list:
-    """แปลหัวข้อข่าวเป็นภาษาไทยโดยใช้ Gemini API"""
     if not GEMINI_API_KEY:
-        return titles  # fallback ถ้าไม่มี key
+        return titles  
 
     numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
     prompt = (
@@ -136,17 +138,10 @@ def translate_news_gemini(titles: list) -> list:
         f"{numbered}"
     )
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-3.1-flash-lite:generateContent?key={GEMINI_API_KEY}"
-    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_API_KEY}"
 
     try:
-        resp = requests.post(
-            url,
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=30
-        )
+        resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
         resp.raise_for_status()
         text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -154,43 +149,30 @@ def translate_news_gemini(titles: list) -> list:
         result = []
         for line in lines:
             line = line.strip()
-            if not line:
-                continue
-            # ตัดหมายเลขนำหน้า เช่น "1. " หรือ "1) "
+            if not line: continue
             if line and line[0].isdigit():
                 line = line.split(".", 1)[-1].strip()
                 line = line.split(")", 1)[-1].strip()
-            if line:
-                result.append(line)
+            if line: result.append(line)
 
-        # fallback ถ้าได้น้อยกว่า
         while len(result) < len(titles):
             result.append(titles[len(result)])
-
         return result[:len(titles)]
-
     except Exception as e:
         print(f"Gemini translate error: {e}")
-        return titles  # fallback เป็น title เดิม
+        return titles  
 
 # =========================
 # NEWS SENTIMENT
 # =========================
 def sentiment_label(score: float):
-    if score > 0.3:
-        return "🟢 ขาขึ้นแรง", 0.6,  "Strong Bullish"
-    elif score > 0.1:
-        return "🟢 ขาขึ้น",   0.2,  "Bullish"
-    elif score < -0.3:
-        return "🔴 ขาลงแรง", -0.6, "Strong Bearish"
-    elif score < -0.1:
-        return "🔴 ขาลง",   -0.2, "Bearish"
-    else:
-        return "⚪ เป็นกลาง",  0.0, "Neutral"
+    if score > 0.3:    return "🟢 ขาขึ้นแรง", 0.6,  "Strong Bullish"
+    elif score > 0.1:  return "🟢 ขาขึ้น",   0.2,  "Bullish"
+    elif score < -0.3: return "🔴 ขาลงแรง", -0.6, "Strong Bearish"
+    elif score < -0.1: return "🔴 ขาลง",   -0.2, "Bearish"
+    else:              return "⚪ เป็นกลาง",  0.0, "Neutral"
 
-feed       = feedparser.parse(
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F&region=US&lang=en-US"
-)
+feed = feedparser.parse("https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F&region=US&lang=en-US")
 raw_titles = [item.title for item in feed.entries[:6]]
 thai_titles = translate_news_gemini(raw_titles)
 
@@ -199,12 +181,7 @@ for eng, th in zip(raw_titles, thai_titles):
     score = analyzer.polarity_scores(eng)["compound"]
     label_th, expected, label_en = sentiment_label(score)
     news_items.append({
-        "title_en":  eng,
-        "title_th":  th,
-        "label_th":  label_th,
-        "label_en":  label_en,
-        "sentiment": score,
-        "expected":  expected,
+        "title_en": eng, "title_th": th, "label_th": label_th, "label_en": label_en, "sentiment": score, "expected": expected,
     })
 
 # =========================
@@ -214,12 +191,9 @@ avg_sentiment    = sum(n["expected"] for n in news_items) / max(len(news_items),
 combined         = trend_normalized * 0.60 + avg_sentiment * 0.40
 prob             = round(max(0, min(100, 50 + combined * 50)), 2)
 
-if prob >= 65:
-    signal = "ซื้อ 📈"
-elif prob <= 35:
-    signal = "ขาย 📉"
-else:
-    signal = "ถือ ⏳"
+if prob >= 65:     signal = "ซื้อ 📈"
+elif prob <= 35:   signal = "ขาย 📉"
+else:              signal = "ถือ ⏳"
 
 confidence = int(min(95, abs(prob - 50) * 2))
 
@@ -267,7 +241,7 @@ now = (datetime.utcnow() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 # =========================
 # MESSAGE
 # =========================
-message = f"""🤖📊 AI HEDGE FUND v12
+message = f"""🤖📊 AI HEDGE FUND v12 (GOLD)
 
 🕒 {now}
 
@@ -276,7 +250,7 @@ message = f"""🤖📊 AI HEDGE FUND v12
 📊 สภาวะ   : {regime}
 
 📊 เทรนด์  : {round(raw_trend, 2)}/3.0
-📈 RSI    : {round(rsi, 2)}
+📈 RSI     : {round(rsi, 2)}
 📰 ความรู้สึกตลาด : {avg_sentiment:+.2f}
 
 🎯 สัญญาณ    : {signal}
@@ -302,12 +276,19 @@ SL3 : {sl3}
 # =========================
 # SEND TELEGRAM
 # =========================
-if TOKEN and CHAT_ID:
-    resp = requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": message}
-    )
-    print("Telegram:", resp.status_code)
+if TOKEN:
+    # 1. ยิงเข้าแชตส่วนตัวเหมือนเดิม
+    if CHAT_ID:
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": message})
+    
+    # 2. วนลูปยิงเข้าทุกกลุ่มที่เปิดใช้งานใน GitHub Secrets (001, 002, 003)
+    for group_id in group_channels:
+        if group_id:
+            try:
+                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": group_id, "text": message}, timeout=15)
+                print(f"🟢 ส่งเข้ากลุ่ม {group_id} สำเร็จ")
+            except Exception as e:
+                print(f"❌ ส่งเข้ากลุ่ม {group_id} ล้มเหลว:", e)
 
 print(message)
 print("DONE")
