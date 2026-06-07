@@ -75,10 +75,10 @@ rsi      = float((100 - (100 / (1 + rs))).iloc[-1])
 # EMA POSITION
 # =========================
 def pos(p, e):
-    return "🟢 เหนือ" if p > e else "🔴 ใต้"
+    return "🟢 เหนือ" if p > e else "🔴 ต่ำกว่า"
 
 ema_block = (
-    f"📊 EMA STATUS\n"
+    f"📊 สถานะ EMA\n"
     f"EMA20  : {round(ema20,2)}  ({pos(price, ema20)})\n"
     f"EMA50  : {round(ema50,2)}  ({pos(price, ema50)})\n"
     f"EMA200 : {round(ema200,2)} ({pos(price, ema200)})"
@@ -109,15 +109,15 @@ trend_normalized = (raw_trend / 3) * 2 - 1  # -1=full bear, +1=full bull
 # REGIME
 # =========================
 if price > ema20 > ema50 > ema200:
-    regime = "📈 Uptrend"
+    regime = "📈 ขาขึ้น"
 elif price < ema20 < ema50 < ema200:
-    regime = "📉 Downtrend"
+    regime = "📉 ขาลง"
 elif rsi < 25:
-    regime = "⚠️ Oversold"
+    regime = "⚠️ ซื้อมากเกิน"
 elif rsi > 75:
-    regime = "⚠️ Overbought"
+    regime = "⚠️ ขายมากเกิน"
 else:
-    regime = "➖ Sideway"
+    regime = "➖ ทรงตัว"
 
 # =========================
 # TRANSLATE NEWS — Gemini API (ฟรี)
@@ -138,14 +138,14 @@ def translate_news_gemini(titles: list) -> list:
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
+        f"gemini-3.1-flash-lite:generateContent?key={GEMINI_API_KEY}"
     )
 
     try:
         resp = requests.post(
             url,
             json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=15
+            timeout=30
         )
         resp.raise_for_status()
         text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -215,11 +215,11 @@ combined         = trend_normalized * 0.60 + avg_sentiment * 0.40
 prob             = round(max(0, min(100, 50 + combined * 50)), 2)
 
 if prob >= 65:
-    signal = "BUY 📈"
+    signal = "ซื้อ 📈"
 elif prob <= 35:
-    signal = "SELL 📉"
+    signal = "ขาย 📉"
 else:
-    signal = "HOLD ⏳"
+    signal = "ถือ ⏳"
 
 confidence = int(min(95, abs(prob - 50) * 2))
 
@@ -227,12 +227,12 @@ confidence = int(min(95, abs(prob - 50) * 2))
 # TP / SL — ใช้ ATR
 # =========================
 def tp_sl_atr(signal, price, atr):
-    if "BUY" in signal:
+    if "ซื้อ" in signal:
         return (
             round(price + atr * 0.8, 2), round(price + atr * 1.5, 2), round(price + atr * 2.5, 2),
             round(price - atr * 0.8, 2), round(price - atr * 1.5, 2), round(price - atr * 2.2, 2),
         )
-    elif "SELL" in signal:
+    elif "ขาย" in signal:
         return (
             round(price - atr * 0.8, 2), round(price - atr * 1.5, 2), round(price - atr * 2.5, 2),
             round(price + atr * 0.8, 2), round(price + atr * 1.5, 2), round(price + atr * 2.2, 2),
@@ -248,12 +248,12 @@ tp1, tp2, tp3, sl1, sl2, sl3 = tp_sl_atr(signal, price, atr)
 # =========================
 # NEWS TEXT
 # =========================
-news_text = "📰 วิเคราะห์ข่าวรายตัว\n"
+news_text = "📰 วิเคราะห์ข่าว\n"
 for i, n in enumerate(news_items, 1):
     news_text += (
         f"\n🧾 ข่าว #{i}\n"
         f"{n['label_th']} ({n['label_en']})\n"
-        f"📊 Sentiment : {n['sentiment']:+.2f}\n"
+        f"📊 อารมณ์ตลาด : {n['sentiment']:+.2f}\n"
         f"📰 EN : {n['title_en']}\n"
         f"🇹🇭 TH : {n['title_th']}\n"
         f"{'─'*20}"
@@ -271,19 +271,19 @@ message = f"""🤖📊 AI HEDGE FUND v12
 
 🕒 {now}
 
-💰 PRICE  : {round(price, 2)}
-📉 CHANGE : {change:+}
-📊 REGIME : {regime}
+💰 ราคา   : {round(price, 2)}
+📉 เปลี่ยน  : {change:+}
+📊 สภาวะ   : {regime}
 
-📊 TREND  : {round(raw_trend, 2)}/3.0
+📊 เทรนด์  : {round(raw_trend, 2)}/3.0
 📈 RSI    : {round(rsi, 2)}
-📰 SENTIMENT AVG : {avg_sentiment:+.2f}
+📰 ความรู้สึกตลาด : {avg_sentiment:+.2f}
 
-🎯 SIGNAL     : {signal}
-🔥 CONFIDENCE : {confidence}%
-🎯 PROBABILITY: {prob}%
+🎯 สัญญาณ    : {signal}
+🔥 ความมั่นใจ  : {confidence}%
+🎯 โอกาส      : {prob}%
 
-💰 TP / SL  (ATR={round(atr,2)})
+💰 เป้าหมาย / หยุดขาดทุน (ATR={round(atr,2)})
 TP1 : {tp1}
 TP2 : {tp2}
 TP3 : {tp3}
