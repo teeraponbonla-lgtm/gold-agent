@@ -1,6 +1,4 @@
 yfinance
 requests
-feedparser
-vaderSentiment
 pandas
 numpy
