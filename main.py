@@ -1,37 +1,32 @@
 import os
 import requests
 import yfinance as yf
-import feedparser
+import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # =========================
 # CONFIG
 # =========================
-TOKEN         = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID       = os.environ.get("TELEGRAM_CHAT_ID")
-GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
-
-# ดึงค่ากลุ่มจาก GitHub Secrets รองรับการเพิ่มกลุ่มในอนาคต (001, 002, 003)
-group_channels = [
-    os.environ.get("TELEGRAM_GROUP_CHAT_ID_001"),
-    os.environ.get("TELEGRAM_GROUP_CHAT_ID_002"),
-    os.environ.get("TELEGRAM_GROUP_CHAT_ID_003")
-]
-
-analyzer = SentimentIntensityAnalyzer()
+TOKEN          = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID        = os.environ.get("TELEGRAM_CHAT_ID")
 
 # =========================
-# DATA
+# DATA — Multi-Timeframe
 # =========================
-gold  = yf.Ticker("GC=F")
-df    = gold.history(period="1y")    
-df_1m = gold.history(period="1mo")   
-df_5d = gold.history(period="5d")    
+gold = yf.Ticker("GC=F")
 
-price  = float(df["Close"].iloc[-1])
-prev   = float(df["Close"].iloc[-2])
-change = round(price - prev, 2)
+df_1d  = gold.history(period="6mo",  interval="1d")
+df_4h  = gold.history(period="60d",  interval="60m")   # yfinance ไม่มี 4h ใช้ 1h แล้ว resample
+df_1h  = gold.history(period="7d",   interval="60m")
+df_30m = gold.history(period="5d",   interval="30m")
+
+# resample 1h → 4h
+df_4h = df_4h.resample("4h").agg({
+    "Open": "first", "High": "max",
+    "Low": "min",    "Close": "last",
+    "Volume": "sum"
+}).dropna()
 
 # =========================
 # EMA
@@ -43,252 +38,265 @@ def add_ema(d):
     d["EMA200"] = d["Close"].ewm(span=200, adjust=False).mean()
     return d
 
-df    = add_ema(df)
-df_1m = add_ema(df_1m)
-df_5d = add_ema(df_5d)
+df_1d  = add_ema(df_1d)
+df_4h  = add_ema(df_4h)
+df_1h  = add_ema(df_1h)
+df_30m = add_ema(df_30m)
 
-ema20  = float(df["EMA20"].iloc[-1])
-ema50  = float(df["EMA50"].iloc[-1])
-ema200 = float(df["EMA200"].iloc[-1])
+price = float(df_30m["Close"].iloc[-1])
 
 # =========================
-# ATR (14)
+# ATR (14) จาก 1H
 # =========================
 def calc_atr(d, period=14):
     high  = d["High"]
     low   = d["Low"]
     close = d["Close"].shift(1)
-    tr = (high - low).combine((high - close).abs(), max).combine((low  - close).abs(), max)
+    tr = (high - low).combine(
+        (high - close).abs(), max
+    ).combine(
+        (low - close).abs(), max
+    )
     return float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
 
-atr = calc_atr(df)
+atr_1h = calc_atr(df_1h)
 
 # =========================
-# RSI (14)
+# RSI (14) จาก 1H
 # =========================
-delta    = df["Close"].diff()
+delta    = df_1h["Close"].diff()
 gain     = delta.where(delta > 0, 0.0)
 loss     = -delta.where(delta < 0, 0.0)
 avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
 avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
 rs       = avg_gain / avg_loss
-rsi      = float((100 - (100 / (1 + rs))).iloc[-1])
+rsi_1h   = float((100 - (100 / (1 + rs))).iloc[-1])
 
 # =========================
-# EMA POSITION
+# เงื่อนไข 1: TREND (1D + 4H)
 # =========================
-def pos(p, e):
-    return "🟢 เหนือ" if p > e else "🔴 ต่ำกว่า"
-
-ema_block = (
-    f"📊 Status EMA\n"
-    f"EMA20  : {round(ema20,2)}  ({pos(price, ema20)})\n"
-    f"EMA50  : {round(ema50,2)}  ({pos(price, ema50)})\n"
-    f"EMA200 : {round(ema200,2)} ({pos(price, ema200)})"
-)
-
-# =========================
-# TREND SCORE
-# =========================
-def trend_score_df(d):
-    s    = 0
+def get_trend(d):
     p    = float(d["Close"].iloc[-1])
     e20  = float(d["EMA20"].iloc[-1])
     e50  = float(d["EMA50"].iloc[-1])
     e200 = float(d["EMA200"].iloc[-1])
-    if p   > e20:  s += 1
-    if e20 > e50:  s += 1
-    if e50 > e200: s += 1
-    return s
-
-raw_trend = (
-    trend_score_df(df_5d) * 0.30 +
-    trend_score_df(df_1m) * 0.35 +
-    trend_score_df(df)    * 0.35
-)
-trend_normalized = (raw_trend / 3) * 2 - 1  
-
-# =========================
-# REGIME
-# =========================
-if price > ema20 > ema50 > ema200:
-    regime = "📈 ขาขึ้น"
-elif price < ema20 < ema50 < ema200:
-    regime = "📉 ขาลง"
-elif rsi < 25:
-    regime = "⚠️ ซื้อมากเกิน"
-elif rsi > 75:
-    regime = "⚠️ ขายมากเกิน"
-else:
-    regime = "➖ ทรงตัว"
-
-# =========================
-# TRANSLATE NEWS — Gemini
-# =========================
-def translate_news_gemini(titles: list) -> list:
-    if not GEMINI_API_KEY:
-        return titles  
-
-    numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
-    prompt = (
-        "แปลหัวข้อข่าวการเงินต่อไปนี้เป็นภาษาไทยที่อ่านเข้าใจง่าย กระชับ "
-        "และถูกต้องตามบริบทการลงทุน ไม่ต้องแปลตรงตัวทุกคำ ให้ได้ใจความที่ชัดเจน "
-        "ตอบเฉพาะหัวข้อที่แปลแล้ว ไม่ต้องมีคำอธิบายเพิ่ม "
-        "รูปแบบ: หมายเลข. หัวข้อภาษาไทย\n\n"
-        f"{numbered}"
-    )
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_API_KEY}"
-
-    try:
-        resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
-        resp.raise_for_status()
-        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-
-        lines  = text.strip().split("\n")
-        result = []
-        for line in lines:
-            line = line.strip()
-            if not line: continue
-            if line and line[0].isdigit():
-                line = line.split(".", 1)[-1].strip()
-                line = line.split(")", 1)[-1].strip()
-            if line: result.append(line)
-
-        while len(result) < len(titles):
-            result.append(titles[len(result)])
-        return result[:len(titles)]
-    except Exception as e:
-        print(f"Gemini translate error: {e}")
-        return titles  
-
-# =========================
-# NEWS SENTIMENT
-# =========================
-def sentiment_label(score: float):
-    if score > 0.3:    return "🟢 ขาขึ้นแรง", 0.6,  "Strong Bullish"
-    elif score > 0.1:  return "🟢 ขาขึ้น",   0.2,  "Bullish"
-    elif score < -0.3: return "🔴 ขาลงแรง", -0.6, "Strong Bearish"
-    elif score < -0.1: return "🔴 ขาลง",   -0.2, "Bearish"
-    else:              return "⚪ เป็นกลาง",  0.0, "Neutral"
-
-feed = feedparser.parse("https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F&region=US&lang=en-US")
-raw_titles = [item.title for item in feed.entries[:6]]
-thai_titles = translate_news_gemini(raw_titles)
-
-news_items = []
-for eng, th in zip(raw_titles, thai_titles):
-    score = analyzer.polarity_scores(eng)["compound"]
-    label_th, expected, label_en = sentiment_label(score)
-    news_items.append({
-        "title_en": eng, "title_th": th, "label_th": label_th, "label_en": label_en, "sentiment": score, "expected": expected,
-    })
-
-# =========================
-# SIGNAL
-# =========================
-avg_sentiment    = sum(n["expected"] for n in news_items) / max(len(news_items), 1)
-combined         = trend_normalized * 0.60 + avg_sentiment * 0.40
-prob             = round(max(0, min(100, 50 + combined * 50)), 2)
-
-if prob >= 65:     signal = "ซื้อ 📈"
-elif prob <= 35:   signal = "ขาย 📉"
-else:              signal = "ถือ ⏳"
-
-confidence = int(min(95, abs(prob - 50) * 2))
-
-# =========================
-# TP / SL — ใช้ ATR
-# =========================
-def tp_sl_atr(signal, price, atr):
-    if "ซื้อ" in signal:
-        return (
-            round(price + atr * 0.8, 2), round(price + atr * 1.5, 2), round(price + atr * 2.5, 2),
-            round(price - atr * 0.8, 2), round(price - atr * 1.5, 2), round(price - atr * 2.2, 2),
-        )
-    elif "ขาย" in signal:
-        return (
-            round(price - atr * 0.8, 2), round(price - atr * 1.5, 2), round(price - atr * 2.5, 2),
-            round(price + atr * 0.8, 2), round(price + atr * 1.5, 2), round(price + atr * 2.2, 2),
-        )
+    if p > e20 > e50:
+        return "bull"
+    elif p < e20 < e50:
+        return "bear"
     else:
-        return (
-            round(price + atr * 0.8, 2), round(price + atr * 1.5, 2), round(price + atr * 2.5, 2),
-            round(price - atr * 0.8, 2), round(price - atr * 1.5, 2), round(price - atr * 2.2, 2),
-        )
+        return "neutral"
 
-tp1, tp2, tp3, sl1, sl2, sl3 = tp_sl_atr(signal, price, atr)
+trend_1d = get_trend(df_1d)
+trend_4h = get_trend(df_4h)
 
-# =========================
-# NEWS TEXT
-# =========================
-news_text = "📰 วิเคราะห์ข่าว\n"
-for i, n in enumerate(news_items, 1):
-    news_text += (
-        f"\n🧾 ข่าว #{i}\n"
-        f"{n['label_th']} ({n['label_en']})\n"
-        f"📊 อารมณ์ตลาด : {n['sentiment']:+.2f}\n"
-        f"📰 EN : {n['title_en']}\n"
-        f"🇹🇭 TH : {n['title_th']}\n"
-        f"{'─'*20}"
-    )
+# เทรนด์ต้องตรงกันทั้ง 1D และ 4H
+if trend_1d == "bull" and trend_4h == "bull":
+    master_trend = "bull"
+elif trend_1d == "bear" and trend_4h == "bear":
+    master_trend = "bear"
+else:
+    master_trend = "neutral"
+
+trend_ok = master_trend in ("bull", "bear")
 
 # =========================
-# TIME (UTC+7)
+# เงื่อนไข 2: SUPPORT / RESISTANCE (Pivot Points จาก 1D + EMA)
 # =========================
-now = (datetime.utcnow() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
+def pivot_levels(d, lookback=20):
+    """หา Swing High/Low จาก lookback แท่ง"""
+    highs = d["High"].rolling(5, center=True).max()
+    lows  = d["Low"].rolling(5, center=True).min()
+    swing_highs = d["High"][d["High"] == highs].dropna().tail(lookback)
+    swing_lows  = d["Low"][d["Low"] == lows].dropna().tail(lookback)
+    return list(swing_highs.values), list(swing_lows.values)
+
+res_levels, sup_levels = pivot_levels(df_1d)
+
+# EMA 20/50/200 จาก 4H เป็นแนวรับ/แนวต้านเพิ่มเติม
+ema_levels = [
+    float(df_4h["EMA20"].iloc[-1]),
+    float(df_4h["EMA50"].iloc[-1]),
+    float(df_4h["EMA200"].iloc[-1]),
+]
+
+all_resistance = sorted(res_levels + [e for e in ema_levels if e > price])
+all_support    = sorted([e for e in sup_levels + [e for e in ema_levels if e < price]], reverse=True)
+
+zone_pct = 0.003  # ราคาต้องอยู่ในโซน ±0.3% ของแนวรับ/แนวต้าน
+
+nearest_sup = next((s for s in all_support    if abs(price - s) / price <= zone_pct), None)
+nearest_res = next((r for r in all_resistance if abs(price - r) / price <= zone_pct), None)
+
+in_support_zone    = nearest_sup is not None
+in_resistance_zone = nearest_res is not None
+sr_zone_ok         = in_support_zone or in_resistance_zone
+
+# โซนที่อยู่
+if in_support_zone:
+    zone_label = f"🟩 แนวรับ ~{round(nearest_sup,2)}"
+    zone_bias  = "bull"
+elif in_resistance_zone:
+    zone_label = f"🟥 แนวต้าน ~{round(nearest_res,2)}"
+    zone_bias  = "bear"
+else:
+    zone_label = "⬜ ไม่อยู่ในโซน"
+    zone_bias  = "neutral"
 
 # =========================
-# MESSAGE
+# เงื่อนไข 3: EMA CONFIRM (1H)
 # =========================
-message = f"""🤖📊 AI HEDGE FUND v12 (GOLD)
+ema20_1h  = float(df_1h["EMA20"].iloc[-1])
+ema50_1h  = float(df_1h["EMA50"].iloc[-1])
+
+if zone_bias == "bull":
+    # ราคาเหนือ EMA20 หรือ EMA20 เหนือ EMA50
+    ema_confirm = price > ema20_1h or ema20_1h > ema50_1h
+elif zone_bias == "bear":
+    # ราคาใต้ EMA20 หรือ EMA20 ใต้ EMA50
+    ema_confirm = price < ema20_1h or ema20_1h < ema50_1h
+else:
+    ema_confirm = False
+
+# =========================
+# เงื่อนไข 4: PRICE ACTION (30M — แท่งปิดล่าสุด)
+# =========================
+def check_price_action(d, bias):
+    """ตรวจ Engulfing และ Pin Bar บนแท่งล่าสุด"""
+    if len(d) < 3:
+        return False, "ข้อมูลไม่พอ"
+
+    c0 = d.iloc[-1]   # แท่งล่าสุด
+    c1 = d.iloc[-2]   # แท่งก่อนหน้า
+
+    o0, h0, l0, cl0 = c0["Open"], c0["High"], c0["Low"], c0["Close"]
+    o1, h1, l1, cl1 = c1["Open"], c1["High"], c1["Low"], c1["Close"]
+
+    body0  = abs(cl0 - o0)
+    range0 = h0 - l0
+    wick_upper = h0 - max(o0, cl0)
+    wick_lower = min(o0, cl0) - l0
+
+    signals = []
+
+    # --- Bullish Engulfing ---
+    if bias == "bull":
+        if cl1 < o1 and cl0 > o0:           # แท่งก่อนลง แท่งนี้ขึ้น
+            if o0 <= cl1 and cl0 >= o1:      # กลืนกิน body
+                signals.append("🕯 Bullish Engulfing")
+
+    # --- Bearish Engulfing ---
+    if bias == "bear":
+        if cl1 > o1 and cl0 < o0:
+            if o0 >= cl1 and cl0 <= o1:
+                signals.append("🕯 Bearish Engulfing")
+
+    # --- Bullish Pin Bar ---
+    if bias == "bull":
+        if range0 > 0 and body0 / range0 < 0.35 and wick_lower > body0 * 2:
+            signals.append("📌 Bullish Pin Bar")
+
+    # --- Bearish Pin Bar ---
+    if bias == "bear":
+        if range0 > 0 and body0 / range0 < 0.35 and wick_upper > body0 * 2:
+            signals.append("📌 Bearish Pin Bar")
+
+    return len(signals) > 0, ", ".join(signals) if signals else "ไม่มีสัญญาณ"
+
+pa_ok, pa_signal = check_price_action(df_30m, zone_bias)
+
+# =========================
+# เงื่อนไข 5: RR อย่างน้อย 1:2
+# =========================
+rr_ok    = False
+rr_label = ""
+entry = tp = sl = None
+
+if zone_bias == "bull" and nearest_sup:
+    sl    = round(nearest_sup - atr_1h * 0.5, 2)
+    entry = round(price, 2)
+    risk  = entry - sl
+    tp    = round(entry + risk * 2, 2)
+    rr    = round((tp - entry) / (entry - sl), 2) if (entry - sl) > 0 else 0
+    rr_ok = rr >= 2.0
+    rr_label = f"RR = 1:{rr}"
+
+elif zone_bias == "bear" and nearest_res:
+    sl    = round(nearest_res + atr_1h * 0.5, 2)
+    entry = round(price, 2)
+    risk  = sl - entry
+    tp    = round(entry - risk * 2, 2)
+    rr    = round((entry - tp) / (sl - entry), 2) if (sl - entry) > 0 else 0
+    rr_ok = rr >= 2.0
+    rr_label = f"RR = 1:{rr}"
+
+# =========================
+# รวมเงื่อนไขทั้ง 4
+# =========================
+conditions = {
+    "✅ เทรนด์ (1D+4H)" if trend_ok     else "❌ เทรนด์ (1D+4H)":     trend_ok,
+    "✅ โซน S/R"         if sr_zone_ok   else "❌ โซน S/R":             sr_zone_ok,
+    "✅ EMA Confirm"     if ema_confirm  else "❌ EMA Confirm":         ema_confirm,
+    "✅ Price Action"    if pa_ok        else "❌ Price Action":        pa_ok,
+    f"✅ {rr_label}"     if rr_ok        else f"❌ RR < 1:2":           rr_ok,
+}
+
+all_pass = all(conditions.values())
+
+# =========================
+# ถ้าไม่ครบเงื่อนไข → จบ ไม่ส่ง Telegram
+# =========================
+if not all_pass:
+    cond_text = "\n".join(conditions.keys())
+    print(f"[SKIP] เงื่อนไขไม่ครบ:\n{cond_text}")
+    exit(0)
+
+# =========================
+# ถ้าครบทุกเงื่อนไข → สร้างสัญญาณ
+# =========================
+signal     = "ซื้อ 📈" if zone_bias == "bull" else "ขาย 📉"
+trend_text = "📈 ขาขึ้น" if master_trend == "bull" else "📉 ขาลง"
+now        = (datetime.utcnow() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
+
+cond_text = "\n".join(conditions.keys())
+
+message = f"""🚨 AI GOLD SIGNAL 🚨
 
 🕒 {now}
+💰 ราคา : {round(price, 2)}
 
-💰 ราคา   : {round(price, 2)}
-📉 เปลี่ยน  : {change:+}
-📊 สภาวะ   : {regime}
+━━━━━━━━━━━━━━━━━━━━
+✅ เงื่อนไขครบทั้ง 4 ข้อ
+━━━━━━━━━━━━━━━━━━━━
+{cond_text}
 
-📊 เทรนด์  : {round(raw_trend, 2)}/3.0
-📈 RSI     : {round(rsi, 2)}
-📰 ความรู้สึกตลาด : {avg_sentiment:+.2f}
+📊 รายละเอียด
+🔹 เทรนด์หลัก  : {trend_text}  (1D: {trend_1d} | 4H: {trend_4h})
+🔹 โซน         : {zone_label}
+🔹 Price Action : {pa_signal}
+🔹 RSI (1H)    : {round(rsi_1h, 2)}
+🔹 ATR (1H)    : {round(atr_1h, 2)}
 
-🎯 สัญญาณ    : {signal}
-🔥 ความมั่นใจ  : {confidence}%
-🎯 โอกาส      : {prob}%
+━━━━━━━━━━━━━━━━━━━━
+🎯 สัญญาณ : {signal}
 
-💰 เป้าหมาย / หยุดขาดทุน (ATR={round(atr,2)})
-TP1 : {tp1}
-TP2 : {tp2}
-TP3 : {tp3}
-
-SL1 : {sl1}
-SL2 : {sl2}
-SL3 : {sl3}
-
-────────────────────
-{ema_block}
-
-────────────────────
-{news_text}
+📌 Entry : {entry}
+🎯 TP    : {tp}
+🛑 SL    : {sl}
+📐 {rr_label}
+━━━━━━━━━━━━━━━━━━━━
+⚠️ ใช้ประกอบการตัดสินใจเท่านั้น
 """
 
 # =========================
 # SEND TELEGRAM
 # =========================
-if TOKEN:
-    # 1. ยิงเข้าแชตส่วนตัวเหมือนเดิม
-    if CHAT_ID:
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": message})
-    
-    # 2. วนลูปยิงเข้าทุกกลุ่มที่เปิดใช้งานใน GitHub Secrets (001, 002, 003)
-    for group_id in group_channels:
-        if group_id:
-            try:
-                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": group_id, "text": message}, timeout=15)
-                print(f"🟢 ส่งเข้ากลุ่ม {group_id} สำเร็จ")
-            except Exception as e:
-                print(f"❌ ส่งเข้ากลุ่ม {group_id} ล้มเหลว:", e)
+if TOKEN and CHAT_ID:
+    resp = requests.post(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": message}
+    )
+    print("Telegram:", resp.status_code)
 
 print(message)
 print("DONE")
